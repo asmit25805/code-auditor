@@ -1,0 +1,42 @@
+name: 🤖 Daily Code Audit
+
+on:
+  # Runs every day at midnight UTC automatically
+  schedule:
+    - cron: "0 0 * * *"
+
+  # Also lets you trigger it manually from GitHub's UI
+  # Go to Actions tab → Daily Code Audit → Run workflow
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run code auditor
+        env:
+          GITHUB_TOKEN:     ${{ secrets.GITHUB_TOKEN }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
+        run: python main.py
+
+      # Save the SQLite database as an artifact so findings persist
+      - name: Upload audit log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audit-log
+          path: audit_log.db
+          retention-days: 90
