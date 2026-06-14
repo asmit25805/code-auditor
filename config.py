@@ -15,7 +15,7 @@ REPOS_PER_RUN        = 8          # How many repos to audit per run
 
 # ── Code Fetching Settings ──────────────────────────────────
 MAX_FILE_SIZE_KB     = 100        # Skip files larger than this (too big for LLM)
-MAX_FILES_PER_REPO   = 8          # Max files to analyze per repo
+MAX_FILES_PER_REPO   = 12          # Max files to analyze per repo
 MAX_CHARS_PER_FILE   = 6000       # Truncate files beyond this character limit
 
 # ── Supported file extensions → language name ───────────────
