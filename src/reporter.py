@@ -75,7 +75,7 @@ def format_issue_body(findings: list[dict], repo_name: str) -> str:
     ]
     summary_line = " · ".join(summary_parts)
 
-    return f"""## 🤖 Automated Code Audit Report
+    return f"""##  Code Audit Report
 
 > All findings are reviewed for confidence before posting.
 > Please verify each finding before acting on it.
