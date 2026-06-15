@@ -9,9 +9,9 @@ CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
 GROQ_API_KEY     = os.getenv("GROQ_API_KEY")
 
 # ── Trending Repo Settings ──────────────────────────────────
-TRENDING_DAYS        = 7          # Look at repos created in last N days
-TRENDING_MIN_STARS   = 50         # Ignore repos with fewer stars than this
-REPOS_PER_RUN        = 8          # How many repos to audit per run
+TRENDING_DAYS        = 30          # Look at repos created in last N days
+TRENDING_MIN_STARS   = 75         # Ignore repos with fewer stars than this
+REPOS_PER_RUN        = 10          # How many repos to audit per run
 
 # ── Code Fetching Settings ──────────────────────────────────
 MAX_FILE_SIZE_KB     = 100        # Skip files larger than this (too big for LLM)
