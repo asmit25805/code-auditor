@@ -90,7 +90,7 @@ def format_issue_body(findings: list[dict], repo_name: str) -> str:
 <details>
 <summary>About this report</summary>
 
-This report was generated using Llama 3.3 70B via the Cerebras API.
+This report was generated using Llama 3.3 70B.
 Only findings with ≥80% confidence are included.
 False positives are possible — use your own judgment.
 
