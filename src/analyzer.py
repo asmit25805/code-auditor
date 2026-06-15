@@ -62,7 +62,7 @@ def call_llm(messages: list[dict]) -> str:
     # ── Try Cerebras ────────────────────────────────────────
     try:
         response = cerebras_client.chat.completions.create(
-            model="llama-3.3-70b",
+            model="gpt-oss-120b",
             messages=messages,
             max_tokens=1500,
             temperature=0.1,
