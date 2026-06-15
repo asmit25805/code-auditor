@@ -33,7 +33,7 @@ SUPPORTED_EXTENSIONS = {
 }
 
 # ── AI Settings ─────────────────────────────────────────────
-CEREBRAS_MODEL = "kimi-k2.6"
+CEREBRAS_MODEL = "llama3.1-70b"
 MIN_CONFIDENCE       = 0.80       # Only report findings above this confidence
 
 # ── Files/Folders to always skip ────────────────────────────
