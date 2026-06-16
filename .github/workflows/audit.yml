@@ -3,7 +3,7 @@ name: 🤖 Daily Code Audit
 on:
   # Runs every day at midnight UTC automatically
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "0 2 * * *"
 
   # Also lets you trigger it manually from GitHub's UI
   # Go to Actions tab → Daily Code Audit → Run workflow
