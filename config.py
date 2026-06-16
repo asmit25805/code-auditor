@@ -16,7 +16,7 @@ REPOS_PER_RUN        = 16          # How many repos to audit per run
 # ── Code Fetching Settings ──────────────────────────────────
 MAX_FILE_SIZE_KB     = 150        # Skip files larger than this (too big for LLM)
 MAX_FILES_PER_REPO   = 22          # Max files to analyze per repo
-MAX_CHARS_PER_FILE   = 10000       # Truncate files beyond this character limit
+MAX_CHARS_PER_FILE   = 15000       # Truncate files beyond this character limit
 
 # ── Supported file extensions → language name ───────────────
 SUPPORTED_EXTENSIONS = {
@@ -34,7 +34,7 @@ SUPPORTED_EXTENSIONS = {
 
 # ── AI Settings ─────────────────────────────────────────────
 CEREBRAS_MODEL="gpt-oss-120b"
-MIN_CONFIDENCE       = 0.80       # Only report findings above this confidence
+MIN_CONFIDENCE       = 0.90       # Only report findings above this confidence
 
 # ── Files/Folders to always skip ────────────────────────────
 SKIP_PATHS = [
