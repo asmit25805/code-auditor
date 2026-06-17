@@ -12,7 +12,7 @@ GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY")
 # ── Trending Repo Settings ──────────────────────────────────
 TRENDING_DAYS        = 30          # Look at repos created in last N days
 TRENDING_MIN_STARS   = 100         # Ignore repos with fewer stars than this
-REPOS_PER_RUN        = 5           # How many repos to audit per run
+REPOS_PER_RUN        = 15           # How many repos to audit per run
 
 # ── Code Fetching Settings ──────────────────────────────────
 MAX_FILE_SIZE_KB     = 150         # Skip files larger than this (too big for LLM)
