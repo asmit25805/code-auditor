@@ -1,17 +1,21 @@
 """
 analyzer.py — Module 3
 Sends code files to Cerebras (Llama 3.3 70B) for analysis.
-Falls back to Groq automatically if Cerebras fails.
+Falls back to Groq → Gemini automatically if each provider fails.
 """
 
 import json
 from cerebras.cloud.sdk import Cerebras
 from groq import Groq
-from config import CEREBRAS_API_KEY, GROQ_API_KEY, MIN_CONFIDENCE
+import google.generativeai as genai
+
+from config import CEREBRAS_API_KEY, GROQ_API_KEY, GEMINI_API_KEY, CEREBRAS_MODEL, MIN_CONFIDENCE
 
 
 cerebras_client = Cerebras(api_key=CEREBRAS_API_KEY)
 groq_client     = Groq(api_key=GROQ_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
+gemini_client   = genai.GenerativeModel("gemini-2.0-flash")
 
 
 SYSTEM_PROMPT = """You are a senior software engineer doing a careful code review.
@@ -35,7 +39,7 @@ You must respond ONLY with a valid JSON object — no explanation, no markdown, 
 
 STRICT RULES — read carefully:
 - Only report "bug" or "security" type findings. Never report performance or suggestions.
-- Only report confidence >= 0.90. If you are not certain, do not include it.
+- Only report confidence >= 0.92. If you are not certain, do not include it.
 - NEVER flag stdin size limits, sync fs calls, or event loop blocking in short-lived CLI scripts or one-shot processes. These are not real issues in that context.
 - NEVER flag environment variables as security issues if they are local config on the user's own machine.
 - NEVER flag missing radix in parseInt, missing error handling, or other style/best-practice issues.
@@ -45,7 +49,7 @@ STRICT RULES — read carefully:
 
 
 def build_user_prompt(file_path: str, language: str, content: str) -> str:
-    return f"""Analyze this {language} file for bugs, security vulnerabilities, and performance issues.
+    return f"""Analyze this {language} file for bugs and security vulnerabilities only.
 
 File: {file_path}
 
@@ -54,42 +58,75 @@ File: {file_path}
 ```"""
 
 
+def call_cerebras(messages: list[dict]) -> str:
+    response = cerebras_client.chat.completions.create(
+        model=CEREBRAS_MODEL,
+        messages=messages,
+        max_tokens=3000,
+        temperature=0.1,
+    )
+    content = response.choices[0].message.content
+    if not content:
+        raise RuntimeError("Cerebras returned empty response")
+    return content.strip()
+
+
+def call_groq(messages: list[dict]) -> str:
+    response = groq_client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=messages,
+        max_tokens=3000,
+        temperature=0.1,
+    )
+    content = response.choices[0].message.content
+    if not content:
+        raise RuntimeError("Groq returned empty response")
+    return content.strip()
+
+
+def call_gemini(messages: list[dict]) -> str:
+    system_text = next((m["content"] for m in messages if m["role"] == "system"), "")
+    user_text   = next((m["content"] for m in messages if m["role"] == "user"), "")
+    full_prompt = f"{system_text}\n\n{user_text}"
+    response = gemini_client.generate_content(full_prompt)
+    if not response.text:
+        raise RuntimeError("Gemini returned empty response")
+    return response.text.strip()
+
+
 def call_llm(messages: list[dict]) -> str:
     """
-    Tries Cerebras first. If it fails for any reason
-    (rate limit, timeout, outage), automatically falls back to Groq.
-    Both use Llama 3.3 70B — same model quality.
+    Tries Cerebras → Groq → Gemini in order.
+    Raises RuntimeError if all three fail.
     """
 
-    # ── Try Cerebras ────────────────────────────────────────
+    # ── 1. Cerebras ─────────────────────────────────────────
     try:
-        response = cerebras_client.chat.completions.create(
-            model="gpt-oss-120b",
-            messages=messages,
-            max_tokens=1500,
-            temperature=0.1,
-        )
+        result = call_cerebras(messages)
         print("[Analyzer] Provider: Cerebras ✅")
-        return response.choices[0].message.content.strip()
-
+        return result
     except Exception as e:
         print(f"[Analyzer] Cerebras failed → {e}")
         print("[Analyzer] Falling back to Groq...")
 
-    # ── Fallback: Groq ───────────────────────────────────────
+    # ── 2. Groq ──────────────────────────────────────────────
     try:
-        response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=messages,
-            max_tokens=1500,
-            temperature=0.1,
-        )
+        result = call_groq(messages)
         print("[Analyzer] Provider: Groq ✅ (fallback)")
-        return response.choices[0].message.content.strip()
-
+        return result
     except Exception as e:
-        print(f"[Analyzer] Groq also failed → {e}")
-        raise RuntimeError("Both Cerebras and Groq failed.") from e
+        print(f"[Analyzer] Groq failed → {e}")
+        print("[Analyzer] Falling back to Gemini...")
+
+    # ── 3. Gemini ────────────────────────────────────────────
+    try:
+        result = call_gemini(messages)
+        print("[Analyzer] Provider: Gemini ✅ (last resort)")
+        return result
+    except Exception as e:
+        print(f"[Analyzer] Gemini also failed → {e}")
+
+    raise RuntimeError("All three providers (Cerebras, Groq, Gemini) failed.")
 
 
 def analyze_file(file: dict) -> list[dict]:
@@ -136,7 +173,7 @@ def analyze_file(file: dict) -> list[dict]:
         print(f"[Analyzer] ERROR: Could not parse JSON response for {path} → {e}")
         return []
     except RuntimeError:
-        # Both providers failed — skip this file gracefully
+        print(f"[Analyzer] All providers failed for {path} — skipping.")
         return []
     except Exception as e:
         print(f"[Analyzer] ERROR analyzing {path} → {e}")
