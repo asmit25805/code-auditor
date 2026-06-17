@@ -1,12 +1,8 @@
 name: 🤖 Daily Code Audit
 
 on:
-  # Runs every day at midnight UTC automatically
   schedule:
     - cron: "0 2 * * *"
-
-  # Also lets you trigger it manually from GitHub's UI
-  # Go to Actions tab → Daily Code Audit → Run workflow
   workflow_dispatch:
 
 jobs:
@@ -17,7 +13,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # Need full history to push back to repo
           fetch-depth: 0
           token: ${{ secrets.GH_PAT }}
 
@@ -34,6 +29,7 @@ jobs:
           GITHUB_TOKEN:     ${{ secrets.GH_PAT }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY:   ${{ secrets.GEMINI_API_KEY }}
         run: python main.py
 
       - name: Save audit log back to repo
@@ -43,9 +39,9 @@ jobs:
           git config user.email "bot@code-auditor"
           git add audit_log.db
           git diff --staged --quiet || git commit -m "chore: update audit log [skip ci]"
+          git pull --rebase origin main
           git push
 
-      # Also keep artifact as backup download
       - name: Upload audit log artifact
         uses: actions/upload-artifact@v4
         if: always()
