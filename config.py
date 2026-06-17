@@ -7,14 +7,15 @@ load_dotenv()
 GITHUB_TOKEN     = os.getenv("GITHUB_TOKEN")
 CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
 GROQ_API_KEY     = os.getenv("GROQ_API_KEY")
+GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY")
 
 # ── Trending Repo Settings ──────────────────────────────────
 TRENDING_DAYS        = 30          # Look at repos created in last N days
 TRENDING_MIN_STARS   = 100         # Ignore repos with fewer stars than this
-REPOS_PER_RUN        = 15          # How many repos to audit per run
+REPOS_PER_RUN        = 5           # How many repos to audit per run
 
 # ── Code Fetching Settings ──────────────────────────────────
-MAX_FILE_SIZE_KB     = 150        # Skip files larger than this (too big for LLM)
+MAX_FILE_SIZE_KB     = 150         # Skip files larger than this (too big for LLM)
 MAX_FILES_PER_REPO   = 25          # Max files to analyze per repo
 MAX_CHARS_PER_FILE   = 15000       # Truncate files beyond this character limit
 
@@ -33,12 +34,13 @@ SUPPORTED_EXTENSIONS = {
 }
 
 # ── AI Settings ─────────────────────────────────────────────
-CEREBRAS_MODEL="gpt-oss-120b"
-MIN_CONFIDENCE       = 0.92       # Only report findings above this confidence
+CEREBRAS_MODEL   = "gpt-oss-120b"
+MIN_CONFIDENCE   = 0.92            # Only report findings above this confidence
 
 # ── Files/Folders to always skip ────────────────────────────
 SKIP_PATHS = [
     "test", "tests", "__pycache__", "node_modules",
     "vendor", "dist", "build", ".git", "migrations",
-    "fixtures", "mock", "mocks", "spec", "specs"
+    "fixtures", "mock", "mocks", "spec", "specs",
+    "tsdown.config", "vite.config", ".vitepress",
 ]
