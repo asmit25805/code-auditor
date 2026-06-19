@@ -10,13 +10,13 @@ GROQ_API_KEY     = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY")
 
 # ── Trending Repo Settings ──────────────────────────────────
-TRENDING_DAYS        = 30          # Look at repos created in last N days
-TRENDING_MIN_STARS   = 100         # Ignore repos with fewer stars than this
+TRENDING_DAYS        = 45          # Look at repos created in last N days
+TRENDING_MIN_STARS   = 300         # Ignore repos with fewer stars than this
 REPOS_PER_RUN        = 5           # How many repos to audit per run
 
 # ── Code Fetching Settings ──────────────────────────────────
 MAX_FILE_SIZE_KB     = 150         # Skip files larger than this (too big for LLM)
-MAX_FILES_PER_REPO   = 25          # Max files to analyze per repo
+MAX_FILES_PER_REPO   = 35          # Max files to analyze per repo
 MAX_CHARS_PER_FILE   = 15000       # Truncate files beyond this character limit
 
 # ── Supported file extensions → language name ───────────────
