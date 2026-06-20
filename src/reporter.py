@@ -96,7 +96,7 @@ def open_issues(repo_full_name: str, findings: list[dict]) -> list[str]:
     for finding in to_report:
         sev     = finding.get("severity", "medium")
         ftype   = finding.get("type", "bug")
-        title   = f"🤖 {TYPE_EMOJI.get(ftype, '🔍')} {finding.get('title', 'Potential issue found')}"
+        title   = f"{TYPE_EMOJI.get(ftype, '🔍')} {finding.get('title', 'Potential issue found')}"
         body    = format_single_issue_body(finding, repo_full_name)
 
         try:
