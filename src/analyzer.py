@@ -4,9 +4,9 @@ Sends code files to Cerebras for analysis.
 Falls back to Groq → Gemini automatically if each provider fails.
 
 Provider roles:
-  Cerebras → all per-file analysis (fast, 1M tokens/day)
-  Gemini   → README fetching + repo classification + fallback
-  Groq     → last resort only
+  Cerebras → all per-file analysis + README classification (1M tokens/day)
+  Groq     → fallback for file analysis
+  Gemini   → last resort only
 """
 
 import json
@@ -14,7 +14,7 @@ import ast
 import re
 from cerebras.cloud.sdk import Cerebras
 from groq import Groq
-import google.generativeai as genai
+from google import genai
 
 from config import (
     CEREBRAS_API_KEY, GROQ_API_KEY, GEMINI_API_KEY,
@@ -25,16 +25,15 @@ from verifier import verify_findings, deduplicate_findings
 
 cerebras_client = Cerebras(api_key=CEREBRAS_API_KEY)
 groq_client     = Groq(api_key=GROQ_API_KEY)
-genai.configure(api_key=GEMINI_API_KEY)
-gemini_client   = genai.GenerativeModel("gemini-2.0-flash")
+gemini_client   = genai.Client(api_key=GEMINI_API_KEY)
 
 
 # ── Project type → what NOT to flag ─────────────────────────
 PROJECT_TYPE_RULES = {
-    "cli": "NEVER flag stdin handling, sync fs calls, event loop blocking, or local env variables. These are not issues in CLI tools.",
-    "library": "NEVER flag missing input validation or error handling at the top level — library callers are responsible for that.",
+    "cli":        "NEVER flag stdin handling, sync fs calls, event loop blocking, or local env variables. These are not issues in CLI tools.",
+    "library":    "NEVER flag missing input validation at the top level — library callers are responsible for that.",
     "web_server": "Flag all input validation, authentication, SQL injection, XSS, CSRF, and insecure defaults. This code handles untrusted input.",
-    "unknown": "Be conservative. Only flag issues that would cause an obvious, observable failure.",
+    "unknown":    "Be conservative. Only flag issues that would cause an obvious, observable failure.",
 }
 
 
@@ -67,7 +66,7 @@ STRICT RULES:
 - line_reference MUST be an exact function or variable name that exists in the code.
 - description MUST quote the exact problematic line using backticks. No quote = rejected.
 - NEVER report a finding based on truncated code near a cut-off point.
-- Before reporting: ask yourself — does this cause a real, observable failure in normal use? If not, skip it.
+- Before reporting: does this cause a real, observable failure in normal use? If not, skip it.
 - Max 2 findings per file. If clean or unsure, return {{ "findings": [] }}"""
 
 
@@ -107,6 +106,24 @@ File tree (first 50 files):
 # Provider calls
 # ────────────────────────────────────────────────────────────
 
+def sanitize_json_response(raw: str) -> str:
+    """
+    Strips markdown fences and removes control characters
+    that cause json.loads() to fail.
+    """
+    # Strip markdown fences
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    raw = raw.strip()
+
+    # Remove control characters except newline/tab which are valid in JSON strings
+    raw = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', raw)
+
+    return raw
+
+
 def call_cerebras(messages: list[dict]) -> str:
     response = cerebras_client.chat.completions.create(
         model=CEREBRAS_MODEL,
@@ -133,19 +150,18 @@ def call_groq(messages: list[dict]) -> str:
     return content.strip()
 
 
-def call_gemini_raw(prompt: str) -> str:
-    """Gemini takes a single string prompt — used for README classification."""
-    response = gemini_client.generate_content(prompt)
+def call_gemini(messages: list[dict]) -> str:
+    """Gemini as last resort — combines system + user into one prompt."""
+    system_text = next((m["content"] for m in messages if m["role"] == "system"), "")
+    user_text   = next((m["content"] for m in messages if m["role"] == "user"), "")
+    full_prompt = f"{system_text}\n\n{user_text}"
+    response    = gemini_client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=full_prompt,
+    )
     if not response.text:
         raise RuntimeError("Gemini returned empty response")
     return response.text.strip()
-
-
-def call_gemini(messages: list[dict]) -> str:
-    """Gemini fallback for file analysis — combines system + user messages."""
-    system_text = next((m["content"] for m in messages if m["role"] == "system"), "")
-    user_text   = next((m["content"] for m in messages if m["role"] == "user"), "")
-    return call_gemini_raw(f"{system_text}\n\n{user_text}")
 
 
 def call_llm(messages: list[dict]) -> str:
@@ -175,26 +191,27 @@ def call_llm(messages: list[dict]) -> str:
 
 
 # ────────────────────────────────────────────────────────────
-# README classification (Gemini only — large context window)
+# README classification — uses Cerebras (not Gemini)
+# Cerebras has 1M tokens/day, Gemini free tier is only ~50 req/day
 # ────────────────────────────────────────────────────────────
 
 def classify_repo(readme: str, file_tree: list[str]) -> dict:
     """
-    Uses Gemini to classify the repo type from README + file tree.
-    Returns a dict with project_type, project_description, etc.
+    Classifies repo type using Cerebras + README + file tree.
+    Returns project_type, description, etc.
     Falls back to safe defaults if classification fails.
     """
     default = {
-        "project_type": "unknown",
-        "project_description": "Unknown project",
+        "project_type":          "unknown",
+        "project_description":   "Unknown project",
         "handles_untrusted_input": False,
-        "is_security_critical": False,
+        "is_security_critical":  False,
     }
 
     if not readme and not file_tree:
         return default
 
-    tree_str = "\n".join(file_tree[:50])
+    tree_str       = "\n".join(file_tree[:50])
     readme_trimmed = readme[:3000] if readme else "No README found."
 
     prompt = README_CLASSIFICATION_PROMPT.format(
@@ -202,20 +219,17 @@ def classify_repo(readme: str, file_tree: list[str]) -> dict:
         file_tree=tree_str,
     )
 
+    messages = [
+        {"role": "system", "content": "You analyze GitHub repos and return JSON only. No markdown, no backticks."},
+        {"role": "user",   "content": prompt},
+    ]
+
     try:
-        raw = call_gemini_raw(prompt)
-
-        # Strip fences
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        raw = raw.strip()
-
+        raw    = call_cerebras(messages)
+        raw    = sanitize_json_response(raw)
         result = json.loads(raw)
         print(f"[Analyzer] Repo classified as: {result.get('project_type', 'unknown')} — {result.get('project_description', '')}")
         return result
-
     except Exception as e:
         print(f"[Analyzer] README classification failed → {e} — using defaults")
         return default
@@ -235,73 +249,65 @@ SECURITY_CRITICAL_NAMES = {
 
 
 def is_security_critical_file(path: str) -> bool:
-    """Returns True if the filename suggests security-critical code."""
     name = path.lower().split("/")[-1].rsplit(".", 1)[0]
     return any(kw in name for kw in SECURITY_CRITICAL_NAMES)
 
 
 def static_analysis_python(content: str) -> list[str]:
-    """
-    Runs basic Python static analysis.
-    Returns list of issue descriptions found, empty if clean.
-    """
     issues = []
-
-    # Check syntax
     try:
-        tree = ast.parse(content)
+        ast.parse(content)
     except SyntaxError as e:
         issues.append(f"Syntax error: {e}")
-        return issues  # Can't do further analysis with broken syntax
+        return issues
 
-    # Check for common dangerous patterns
     dangerous_patterns = [
-        (r'eval\s*\(', "eval() usage"),
-        (r'exec\s*\(', "exec() usage"),
-        (r'pickle\.loads?\s*\(', "pickle.load() — unsafe deserialization"),
-        (r'subprocess.*shell\s*=\s*True', "subprocess with shell=True"),
-        (r'f["\'].*SELECT.*WHERE.*{', "potential SQL injection via f-string"),
-        (r'hashlib\.md5\s*\(', "MD5 usage — weak hashing"),
-        (r'hashlib\.sha1\s*\(', "SHA1 usage — weak hashing"),
-        (r'random\.(random|randint|choice)\s*\(', "non-cryptographic random for potential security use"),
-        (r'assert\s+', "assert statement — stripped in optimized mode"),
+        (r'eval\s*\(',                          "eval() usage"),
+        (r'exec\s*\(',                          "exec() usage"),
+        (r'pickle\.loads?\s*\(',                "pickle.load() — unsafe deserialization"),
+        (r'subprocess.*shell\s*=\s*True',       "subprocess with shell=True"),
+        (r'f["\'].*SELECT.*WHERE.*\{',          "potential SQL injection via f-string"),
+        (r'hashlib\.md5\s*\(',                  "MD5 usage — weak hashing"),
+        (r'hashlib\.sha1\s*\(',                 "SHA1 usage — weak hashing"),
+        (r'random\.(random|randint|choice)\s*\(', "non-cryptographic random"),
+        (r'assert\s+',                          "assert statement — stripped in optimized mode"),
     ]
-
     for pattern, description in dangerous_patterns:
         if re.search(pattern, content, re.IGNORECASE):
             issues.append(description)
-
     return issues
 
 
 def static_analysis_js(content: str) -> list[str]:
-    """Basic JS/TS static analysis via pattern matching."""
     issues = []
-
     dangerous_patterns = [
-        (r'eval\s*\(', "eval() usage"),
-        (r'innerHTML\s*=', "innerHTML assignment — potential XSS"),
-        (r'dangerouslySetInnerHTML', "dangerouslySetInnerHTML — potential XSS"),
-        (r'document\.write\s*\(', "document.write() — potential XSS"),
+        (r'eval\s*\(',                    "eval() usage"),
+        (r'innerHTML\s*=',                "innerHTML assignment — potential XSS"),
+        (r'dangerouslySetInnerHTML',      "dangerouslySetInnerHTML — potential XSS"),
+        (r'document\.write\s*\(',        "document.write() — potential XSS"),
         (r'\.exec\s*\(.*req\.|\.exec\s*\(.*input', "potential SQL injection"),
-        (r'child_process.*exec\s*\(', "child_process.exec() — potential command injection"),
-        (r'Math\.random\s*\(\)', "Math.random() — non-cryptographic"),
-        (r'new\s+Function\s*\(', "new Function() — potential code injection"),
+        (r'child_process.*exec\s*\(',    "child_process.exec() — potential command injection"),
+        (r'Math\.random\s*\(\)',         "Math.random() — non-cryptographic"),
+        (r'new\s+Function\s*\(',         "new Function() — potential code injection"),
     ]
-
     for pattern, description in dangerous_patterns:
         if re.search(pattern, content, re.IGNORECASE):
             issues.append(description)
-
     return issues
 
 
+def run_static_analysis(file: dict) -> list[str]:
+    lang    = file["language"]
+    content = file["content"]
+    if lang == "Python":
+        return static_analysis_python(content)
+    elif lang in ("JavaScript", "TypeScript"):
+        return static_analysis_js(content)
+    else:
+        return []
+
+
 def should_analyze_with_llm(file: dict, static_issues: list[str]) -> bool:
-    """
-    Decides whether to send a file to the LLM.
-    Yes if: static analysis found something, OR the file is security-critical.
-    No if: file is clean and not security-critical (saves tokens, reduces false positives).
-    """
     if static_issues:
         return True
     if is_security_critical_file(file["path"]):
@@ -309,27 +315,14 @@ def should_analyze_with_llm(file: dict, static_issues: list[str]) -> bool:
     return False
 
 
-def run_static_analysis(file: dict) -> list[str]:
-    """Runs the appropriate static analysis for the file's language."""
-    lang = file["language"]
-    content = file["content"]
-
-    if lang == "Python":
-        return static_analysis_python(content)
-    elif lang in ("JavaScript", "TypeScript"):
-        return static_analysis_js(content)
-    else:
-        return []  # No static analysis for other languages — send to LLM directly
-
-
 # ────────────────────────────────────────────────────────────
 # Prompt building
 # ────────────────────────────────────────────────────────────
 
 def build_system_prompt(repo_context: dict) -> str:
-    project_type  = repo_context.get("project_type", "unknown")
-    description   = repo_context.get("project_description", "Unknown project")
-    rules         = PROJECT_TYPE_RULES.get(project_type, PROJECT_TYPE_RULES["unknown"])
+    project_type = repo_context.get("project_type", "unknown")
+    description  = repo_context.get("project_description", "Unknown project")
+    rules        = PROJECT_TYPE_RULES.get(project_type, PROJECT_TYPE_RULES["unknown"])
     return SYSTEM_PROMPT_TEMPLATE.format(
         project_type=project_type,
         project_description=description,
@@ -340,10 +333,11 @@ def build_system_prompt(repo_context: dict) -> str:
 def build_user_prompt(file_path: str, language: str, content: str, static_issues: list[str]) -> str:
     static_hint = ""
     if static_issues:
-        static_hint = f"\nStatic analysis flagged these patterns in this file:\n" + \
-                      "\n".join(f"  - {i}" for i in static_issues) + \
-                      "\nFocus your review on these areas, but only report if you confirm a real bug.\n"
-
+        static_hint = (
+            "\nStatic analysis flagged these patterns in this file:\n" +
+            "\n".join(f"  - {i}" for i in static_issues) +
+            "\nFocus your review on these areas, but only report if you confirm a real bug.\n"
+        )
     return f"""Analyze this {language} file for bugs and security vulnerabilities only.
 Quote the exact problematic line in your description using backticks.
 {static_hint}
@@ -378,15 +372,11 @@ Findings to verify:
 # ────────────────────────────────────────────────────────────
 
 def parse_findings(raw_text: str) -> list[dict]:
-    if raw_text.startswith("```"):
-        raw_text = raw_text.split("```")[1]
-        if raw_text.startswith("json"):
-            raw_text = raw_text[4:]
-    return json.loads(raw_text.strip()).get("findings", [])
+    raw_text = sanitize_json_response(raw_text)
+    return json.loads(raw_text).get("findings", [])
 
 
-def second_pass_verify(file: dict, findings: list[dict], system_prompt: str) -> list[dict]:
-    """LLM verifies its own findings from pass 1."""
+def second_pass_verify(file: dict, findings: list[dict]) -> list[dict]:
     if not findings:
         return []
 
@@ -399,11 +389,7 @@ def second_pass_verify(file: dict, findings: list[dict], system_prompt: str) -> 
 
     try:
         raw = call_llm(messages)
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        raw = raw.strip()
+        raw = sanitize_json_response(raw)
 
         confirmed = set(t.lower().strip() for t in json.loads(raw).get("confirmed", []))
         if not confirmed:
@@ -426,17 +412,17 @@ def analyze_file(file: dict, repo_context: dict) -> list[dict]:
     Full pipeline for a single file:
     1. Static analysis
     2. Decide whether to send to LLM
-    3. LLM pass 1 (find bugs)
-    4. LLM pass 2 (verify findings)
+    3. LLM pass 1 — find bugs
+    4. LLM pass 2 — verify findings
     5. Line reference verification
     """
     path     = file["path"]
     language = file["language"]
 
-    # Step 1 — Static analysis
+    # Step 1 — static analysis
     static_issues = run_static_analysis(file)
 
-    # Step 2 — Decide whether to send to LLM
+    # Step 2 — skip if clean and not security-critical
     if not should_analyze_with_llm(file, static_issues):
         print(f"[Analyzer] Skipping {path} — clean static analysis, not security-critical.")
         return []
@@ -467,7 +453,7 @@ def analyze_file(file: dict, repo_context: dict) -> list[dict]:
 
         # Pass 2 — LLM self-verification
         print(f"[Analyzer]   → {len(findings)} finding(s) — running second pass...")
-        findings = second_pass_verify(file, findings, system_prompt)
+        findings = second_pass_verify(file, findings)
 
         # Pass 3 — line reference verification
         findings = verify_findings(findings, file)
@@ -488,7 +474,7 @@ def analyze_file(file: dict, repo_context: dict) -> list[dict]:
 
 def analyze_repo(files: list[dict], repo_context: dict) -> list[dict]:
     """
-    Analyzes all files in a repo using the repo context for smarter prompts.
+    Analyzes all files in a repo using repo context for smarter prompts.
     Returns deduplicated, verified findings sorted by severity.
     """
     all_findings = []
@@ -497,10 +483,8 @@ def analyze_repo(files: list[dict], repo_context: dict) -> list[dict]:
         findings = analyze_file(file, repo_context)
         all_findings.extend(findings)
 
-    # Deduplicate across files
     all_findings = deduplicate_findings(all_findings)
 
-    # Sort by severity
     severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     all_findings.sort(key=lambda f: severity_order.get(f.get("severity", "low"), 3))
 
