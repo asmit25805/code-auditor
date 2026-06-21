@@ -258,6 +258,10 @@ def static_analysis_python(content: str) -> list[str]:
     try:
         ast.parse(content)
     except SyntaxError as e:
+        # If the file was truncated, the syntax error is likely caused by
+        # the truncation itself, not real broken code — skip to avoid hallucinations
+        if "[truncated]" in content:
+            return []
         issues.append(f"Syntax error: {e}")
         return issues
 
