@@ -1,7 +1,7 @@
 """
 fetcher.py — Module 1
 Fetches trending GitHub repositories using the GitHub Search API.
-No scraping. Uses the official API with your token.
+Skips forks, archived repos, and repos with no auditable source code.
 """
 
 import requests
@@ -15,9 +15,29 @@ HEADERS = {
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
+# Repos whose primary language is in this set have no auditable code
+SKIP_LANGUAGES = {
+    None,
+    "Markdown",
+    "HTML",
+    "CSS",
+    "Jupyter Notebook",
+    "Shell",
+    "Dockerfile",
+    "Batchfile",
+    "PowerShell",
+    "Rich Text Format",
+    "TeX",
+    "YAML",
+    "TOML",
+    "JSON",
+    "XML",
+    "CSV",
+    "Text",
+}
+
 
 def get_date_cutoff() -> str:
-    """Returns a date string N days ago in GitHub's query format."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=TRENDING_DAYS)
     return cutoff.strftime("%Y-%m-%d")
 
@@ -25,18 +45,17 @@ def get_date_cutoff() -> str:
 def fetch_trending_repos(already_seen: set[str]) -> list[dict]:
     """
     Fetches trending repos from GitHub created in the last N days,
-    sorted by stars. Skips any repos already in the seen set.
-
-    Returns a list of repo dicts with the fields we care about.
+    sorted by stars. Skips already-seen, forks, archived, and
+    repos whose primary language has no auditable source code.
     """
     cutoff_date = get_date_cutoff()
 
-    url = "https://api.github.com/search/repositories"
+    url    = "https://api.github.com/search/repositories"
     params = {
         "q":        f"created:>{cutoff_date} stars:>{TRENDING_MIN_STARS}",
         "sort":     "stars",
         "order":    "desc",
-        "per_page": 30,   # Fetch more than we need so we have options after filtering
+        "per_page": 50,   # fetch more so we have options after filtering
     }
 
     print(f"[Fetcher] Searching repos created after {cutoff_date} with {TRENDING_MIN_STARS}+ stars...")
@@ -48,35 +67,38 @@ def fetch_trending_repos(already_seen: set[str]) -> list[dict]:
         print(f"[Fetcher] ERROR: GitHub API request failed → {e}")
         return []
 
-    data = response.json()
+    data      = response.json()
     all_repos = data.get("items", [])
     print(f"[Fetcher] Found {len(all_repos)} repos. Filtering...")
 
     results = []
     for repo in all_repos:
-        full_name = repo["full_name"]  # e.g. "torvalds/linux"
+        full_name = repo["full_name"]
 
-        # Skip if we've already audited this repo
         if full_name in already_seen:
             print(f"[Fetcher] Skipping {full_name} — already audited.")
             continue
 
-        # Skip forks (they're someone else's code, not original)
         if repo.get("fork"):
             continue
 
-        # Skip archived repos
         if repo.get("archived"):
             continue
 
+        # Skip repos with no auditable source code language
+        lang = repo.get("language")
+        if lang in SKIP_LANGUAGES:
+            print(f"[Fetcher] Skipping {full_name} — language '{lang}' has no auditable code.")
+            continue
+
         results.append({
-            "full_name":   full_name,
-            "name":        repo["name"],
-            "owner":       repo["owner"]["login"],
-            "description": repo.get("description", "No description"),
-            "stars":       repo["stargazers_count"],
-            "language":    repo.get("language", "Unknown"),
-            "url":         repo["html_url"],
+            "full_name":      full_name,
+            "name":           repo["name"],
+            "owner":          repo["owner"]["login"],
+            "description":    repo.get("description", "No description"),
+            "stars":          repo["stargazers_count"],
+            "language":       lang,
+            "url":            repo["html_url"],
             "default_branch": repo.get("default_branch", "main"),
         })
 
