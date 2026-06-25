@@ -43,7 +43,8 @@ def run_audit():
         files, readme, file_tree = pull_code_files(repo)
 
         if not files:
-            print(f"[Main] No analyzable files found in {full_name}. Skipping.")
+            print(f"[Main] No analyzable files found in {full_name}. Marking as scanned to skip in future.")
+            mark_repo_scanned(full_name, repo["stars"], [], None)
             continue
 
         # Classify repo using Gemini + README
