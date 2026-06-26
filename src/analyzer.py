@@ -67,7 +67,15 @@ STRICT RULES:
 - description MUST quote the exact problematic line using backticks. No quote = rejected.
 - NEVER report a finding based on truncated code near a cut-off point.
 - Before reporting: does this cause a real, observable failure in normal use? If not, skip it.
-- Max 2 findings per file. If clean or unsure, return {{ "findings": [] }}"""
+- Max 2 findings per file. If clean or unsure, return {{ "findings": [] }}
+
+SEVERITY RULES — be conservative, never sensationalist:
+- Default to "low" unless there is a clear, direct path to exploitation by an external attacker.
+- "medium" requires user-controlled input reaching the vulnerable code with a realistic attack path.
+- "high" requires no authentication and direct, meaningful impact on data or availability.
+- "critical" is reserved only for RCE, authentication bypass, or mass data exfiltration.
+- NEVER rate "high" or "critical" if the attacker must already have local access, control over config files, or be a trusted operator.
+- Defense-in-depth hardenings (validating already-trusted input, adding extra checks) are always "low"."""
 
 
 SECOND_PASS_PROMPT = """You are a strict code reviewer verifying potential bugs.
@@ -274,7 +282,6 @@ def static_analysis_python(content: str) -> list[str]:
         (r'hashlib\.md5\s*\(',                  "MD5 usage — weak hashing"),
         (r'hashlib\.sha1\s*\(',                 "SHA1 usage — weak hashing"),
         (r'random\.(random|randint|choice)\s*\(', "non-cryptographic random"),
-        (r'assert\s+',                          "assert statement — stripped in optimized mode"),
     ]
     for pattern, description in dangerous_patterns:
         if re.search(pattern, content, re.IGNORECASE):
