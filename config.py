@@ -10,8 +10,8 @@ GROQ_API_KEY     = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY")
 
 # ── Trending Repo Settings ──────────────────────────────────
-TRENDING_DAYS        = 45
-TRENDING_MIN_STARS   = 250
+TRENDING_DAYS        = 100
+TRENDING_MIN_STARS   = 800
 REPOS_PER_RUN        = 5
 
 # ── Code Fetching Settings ──────────────────────────────────
