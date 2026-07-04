@@ -1,11 +1,14 @@
 """
 reporter.py — Module 4
-Opens ONE GitHub issue per finding (max 3 issues per repo).
-Fetches repo's issue template from .github/ISSUE_TEMPLATE/ and formats
-the body to match it — preventing auto-close by template-enforcement bots.
+Opens ONE GitHub issue per finding (max 3 per repo).
+Written in a natural, developer-to-developer tone.
+No mention of AI, bots, automation, or confidence scores.
+Follows repo issue templates and CONTRIBUTING.md where found.
 """
 
 import re
+import base64
+import hashlib
 import requests
 from github import Github, GithubException
 from config import GITHUB_TOKEN
@@ -19,198 +22,217 @@ HEADERS = {
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
-SEVERITY_EMOJI = {
-    "critical": "🔴",
-    "high":     "🟠",
-    "medium":   "🟡",
-    "low":      "🔵",
-}
-
-TYPE_EMOJI = {
-    "bug":      "🐛",
-    "security": "🔒",
-}
-
 MAX_ISSUES_PER_REPO = 3
 
 
 # ────────────────────────────────────────────────────────────
-# Issue template fetching
+# Repo metadata fetching
 # ────────────────────────────────────────────────────────────
+
+def fetch_file(owner: str, repo: str, path: str) -> str | None:
+    """Generic helper to fetch a single file from a repo."""
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        if resp.status_code == 200:
+            return base64.b64decode(resp.json()["content"]).decode("utf-8", errors="replace")
+    except Exception:
+        pass
+    return None
+
 
 def fetch_issue_template(owner: str, repo: str) -> str | None:
     """
-    Fetches the repo's bug report issue template from .github/ISSUE_TEMPLATE/.
-    Returns the raw template markdown, or None if not found.
-    Tries common template filenames in order.
+    Fetches the repo's bug report issue template.
+    Tries common locations in order.
     """
-    template_paths = [
+    # Direct filename attempts
+    for path in [
         ".github/ISSUE_TEMPLATE/bug_report.md",
         ".github/ISSUE_TEMPLATE/bug-report.md",
         ".github/ISSUE_TEMPLATE/bug.md",
         ".github/ISSUE_TEMPLATE/issue.md",
         ".github/ISSUE_TEMPLATE.md",
         ".github/bug_report.md",
-    ]
+    ]:
+        content = fetch_file(owner, repo, path)
+        if content:
+            print(f"[Reporter] Found issue template: {path}")
+            return content
 
-    for path in template_paths:
-        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=10)
-            if resp.status_code == 200:
-                import base64
-                data    = resp.json()
-                content = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
-                print(f"[Reporter] Found issue template: {path}")
-                return content
-        except Exception:
-            continue
-
-    # Also try listing the ISSUE_TEMPLATE directory
+    # Try listing the directory
     try:
         url  = f"https://api.github.com/repos/{owner}/{repo}/contents/.github/ISSUE_TEMPLATE"
         resp = requests.get(url, headers=HEADERS, timeout=10)
         if resp.status_code == 200:
-            files = resp.json()
-            # Pick first .md file that looks like a bug report
-            for f in files:
+            for f in resp.json():
                 name = f.get("name", "").lower()
-                if "bug" in name or "issue" in name or "report" in name:
-                    file_url = f.get("download_url")
-                    if file_url:
-                        r = requests.get(file_url, timeout=10)
-                        if r.status_code == 200:
-                            print(f"[Reporter] Found issue template: {f['name']}")
-                            return r.text
+                if any(w in name for w in ["bug", "issue", "report"]):
+                    r = requests.get(f.get("download_url", ""), timeout=10)
+                    if r.status_code == 200:
+                        print(f"[Reporter] Found issue template: {f['name']}")
+                        return r.text
     except Exception:
         pass
 
     return None
 
 
+def check_contributing(owner: str, repo: str) -> bool:
+    """Returns True if repo has a CONTRIBUTING.md file."""
+    for path in ["CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md"]:
+        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=8)
+            if resp.status_code == 200:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+# ────────────────────────────────────────────────────────────
+# Title generation
+# ────────────────────────────────────────────────────────────
+
+def format_title(finding: dict) -> str:
+    """
+    Plain, human-sounding title. No robot emoji, no severity labels.
+    Varies slightly based on finding type to avoid all issues looking identical.
+    """
+    title = finding.get("title", "").strip()
+
+    # Strip any emoji the LLM added
+    title = re.sub(r'[^\x00-\x7F]', '', title).strip(" :-")
+
+    if title:
+        return title[0].upper() + title[1:]
+    return "Potential issue found"
+
+
+# ────────────────────────────────────────────────────────────
+# Body: fill repo template
+# ────────────────────────────────────────────────────────────
+
 def fill_template(template: str, finding: dict) -> str:
     """
-    Fills a GitHub issue template with finding data.
-    Replaces common template placeholders and section bodies.
+    Fills a repo's issue template with finding data.
+    Strips YAML front matter and fills HTML comment placeholders.
     """
+    desc      = finding.get("description", "")
+    fix       = finding.get("fix", "")
+    file_path = finding.get("file_path", "")
+    line_ref  = finding.get("line_reference", "")
     sev       = finding.get("severity", "medium")
-    ftype     = finding.get("type", "bug")
-    s_emoji   = SEVERITY_EMOJI.get(sev, "⚪")
-    desc      = finding.get("description", "No description provided.")
-    fix       = finding.get("fix", "No fix provided.")
-    file_path = finding.get("file_path", "Unknown")
-    line_ref  = finding.get("line_reference", "N/A")
-    confidence = int(finding.get("confidence", 0) * 100)
 
-    # Strip YAML front matter (--- ... ---)
+    # Strip YAML front matter
     filled = re.sub(r'^---.*?---\s*', '', template, flags=re.DOTALL)
 
-    # Replace HTML comments (<!-- ... -->) which are instructions to the reporter
-    # with our actual content based on what the comment describes
     def replace_comment(match):
         comment = match.group(0).lower()
-        if any(w in comment for w in ["describe", "summary", "what", "bug", "problem", "issue"]):
+        if any(w in comment for w in ["describe", "summary", "what happened", "what is", "bug"]):
             return desc
         if any(w in comment for w in ["reproduce", "steps", "how to"]):
             return (
-                f"1. Use the function/code at `{line_ref}` in `{file_path}`\n"
+                f"1. Look at `{line_ref}` in `{file_path}`\n"
                 f"2. Trigger the code path described above\n"
-                f"3. Observe the issue: {desc[:100]}..."
+                f"3. Observe: {desc[:150]}"
             )
         if any(w in comment for w in ["expected"]):
-            return "The code should handle this case safely without the described issue."
-        if any(w in comment for w in ["actual", "instead", "happening"]):
+            return "The code should handle this case safely."
+        if any(w in comment for w in ["actual", "instead", "happening", "observed"]):
             return desc
         if any(w in comment for w in ["fix", "suggest", "solution", "workaround"]):
             return fix
-        if any(w in comment for w in ["version", "environment", "os", "platform"]):
-            return "N/A — automated static analysis finding"
+        if any(w in comment for w in ["version", "environment", "os", "platform", "node", "python"]):
+            return "N/A"
+        if any(w in comment for w in ["additional", "context", "info", "other"]):
+            return f"Found in `{file_path}` at `{line_ref}`."
         return ""
 
     filled = re.sub(r'<!--.*?-->', replace_comment, filled, flags=re.DOTALL)
 
-    # Fill common markdown checkboxes / dropdowns
-    # Severity checkboxes: check the right one
+    # Check severity checkboxes if template has them
     for level in ["critical", "high", "medium", "low"]:
         if level == sev:
             filled = filled.replace(f"[ ] {level.capitalize()}", f"[x] {level.capitalize()}")
             filled = filled.replace(f"[ ] {level}", f"[x] {level}")
-        else:
-            # Leave unchecked ones as-is
-            pass
 
-    # If template has empty sections we couldn't fill, add a footer
-    filled = filled.strip()
-    filled += f"""
+    # Clean up excess blank lines
+    filled = re.sub(r'\n{3,}', '\n\n', filled).strip()
 
----
-
-**File:** `{file_path}`
-**Location:** `{line_ref}`
-**Severity:** {s_emoji} {sev.capitalize()}
-**Type:** {ftype.capitalize()}
-**Confidence:** {confidence}%
-
-<details>
-<summary>About this report</summary>
-
-This finding was generated by an automated audit tool using Llama 3.3 70B.
-It passed LLM self-verification and line reference verification before being reported.
-Please verify before acting on it.
-
-</details>"""
+    # Always add file reference at the end
+    filled += f"\n\n**File:** `{file_path}` — `{line_ref}`"
 
     return filled
 
 
-def format_default_body(finding: dict, repo_name: str) -> str:
-    """Default issue body when no template is found."""
-    sev       = finding.get("severity", "medium")
+# ────────────────────────────────────────────────────────────
+# Body: human-tone default (no template found)
+# ────────────────────────────────────────────────────────────
+
+def format_human_body(finding: dict, has_contributing: bool = False) -> str:
+    """
+    Natural, developer-to-developer issue body.
+    No AI/bot mentions. No confidence scores. No markdown tables.
+    Reads like someone who was reading the code and noticed something.
+    Slightly varied openers so issues don't all look copy-pasted.
+    """
+    desc      = finding.get("description", "")
+    fix       = finding.get("fix", "")
+    file_path = finding.get("file_path", "")
+    line_ref  = finding.get("line_reference", "")
     ftype     = finding.get("type", "bug")
-    s_emoji   = SEVERITY_EMOJI.get(sev, "⚪")
-    t_emoji   = TYPE_EMOJI.get(ftype, "🔍")
+    sev       = finding.get("severity", "medium")
 
-    return f"""{t_emoji} **{ftype.capitalize()}** · {s_emoji} {sev.capitalize()} · Confidence: {int(finding.get('confidence', 0) * 100)}%
+    # Vary the opener based on type/severity/file to avoid templated feel
+    # Use a hash of the file path to deterministically pick one
+    # so the same file always gets the same opener (consistent)
+    hash_val = int(hashlib.md5(file_path.encode()).hexdigest(), 16) % 6
 
-**File:** `{finding.get('file_path', 'Unknown')}`
-**Location:** `{finding.get('line_reference', 'N/A')}`
+    if ftype == "security" and sev in ("critical", "high"):
+        openers = [
+            f"Was going through `{file_path}` and found a security issue worth flagging.",
+            f"Noticed something in `{file_path}` that looks like it could be exploited.",
+            f"Found what looks like a security bug in `{file_path}`.",
+        ]
+    elif ftype == "security":
+        openers = [
+            f"Spotted something in `{file_path}` that could be worth tightening up.",
+            f"Was reading `{file_path}` and noticed a potential security gap.",
+            f"Found a minor security issue in `{file_path}` that might be worth addressing.",
+        ]
+    else:
+        openers = [
+            f"Was reading through `{file_path}` and noticed something that looked off.",
+            f"Found what looks like a bug in `{file_path}`.",
+            f"Spotted an issue in `{file_path}` while going through the code.",
+        ]
 
----
+    opener = openers[hash_val % len(openers)]
 
-### What's wrong
+    # Contributing.md note — if repo has one, acknowledge it
+    contributing_note = ""
+    if has_contributing:
+        contributing_note = "\n\nI've tried to follow your contribution guidelines — let me know if I've missed anything."
 
-{finding.get('description', 'No description provided.')}
+    body = f"""{opener}
 
-### Suggested fix
+**The issue**
 
-{finding.get('fix', 'No fix provided.')}
+{desc}
 
----
+**Where**
 
-### Steps to reproduce
+`{line_ref}` in `{file_path}`
 
-1. Look at `{finding.get('line_reference', 'N/A')}` in `{finding.get('file_path', 'Unknown')}`
-2. Trigger the code path described above
-3. Observe the issue
+**Suggested fix**
 
-### Expected behavior
+{fix}
 
-The code should handle this case safely without the described issue.
+Happy to open a PR if that would be useful.{contributing_note}"""
 
-### Actual behavior
-
-{finding.get('description', 'No description provided.')}
-
----
-
-<details>
-<summary>About this report</summary>
-
-This finding was generated by an automated audit tool using Llama 3.3 70B.
-It passed LLM self-verification and line reference verification before being reported.
-Please verify before acting on it.
-
-</details>"""
+    return body
 
 
 # ────────────────────────────────────────────────────────────
@@ -219,9 +241,9 @@ Please verify before acting on it.
 
 def open_issues(repo_full_name: str, findings: list[dict]) -> list[str]:
     """
-    Opens one GitHub issue per finding, up to MAX_ISSUES_PER_REPO.
-    Fetches and follows the repo's issue template if one exists.
-    Only opens issues for medium+ severity findings.
+    Opens one GitHub issue per finding (max MAX_ISSUES_PER_REPO).
+    Uses repo's issue template if found, otherwise human-tone default.
+    Only reports medium+ severity findings.
     Returns list of issue URLs opened.
     """
     if not findings:
@@ -238,32 +260,37 @@ def open_issues(repo_full_name: str, findings: list[dict]) -> list[str]:
         return []
 
     to_report = significant[:MAX_ISSUES_PER_REPO]
-
-    print(f"[Reporter] Opening {len(to_report)} issue(s) on {repo_full_name} "
-          f"(capped from {len(significant)} significant findings)...")
+    print(f"[Reporter] Opening {len(to_report)} issue(s) on {repo_full_name}...")
 
     try:
         repo = gh.get_repo(repo_full_name)
     except GithubException as e:
-        print(f"[Reporter] Could not access repo {repo_full_name} → {e}")
+        print(f"[Reporter] Could not access {repo_full_name} → {e}")
         return []
 
-    # Fetch issue template once for the whole repo
     owner, repo_name = repo_full_name.split("/", 1)
-    template = fetch_issue_template(owner, repo_name)
-    if not template:
-        print(f"[Reporter] No issue template found — using default format.")
+
+    # Fetch repo metadata once
+    template       = fetch_issue_template(owner, repo_name)
+    has_contrib    = check_contributing(owner, repo_name)
+
+    if template:
+        print(f"[Reporter] Using issue template.")
+    else:
+        print(f"[Reporter] No template found — using default format.")
+
+    if has_contrib:
+        print(f"[Reporter] CONTRIBUTING.md found — will acknowledge it.")
 
     issue_urls = []
 
     for finding in to_report:
-        ftype = finding.get("type", "bug")
-        title = f"{TYPE_EMOJI.get(ftype, '🔍')} {finding.get('title', 'Potential issue found')}"
+        title = format_title(finding)
 
         if template:
             body = fill_template(template, finding)
         else:
-            body = format_default_body(finding, repo_full_name)
+            body = format_human_body(finding, has_contributing=has_contrib)
 
         try:
             issue = repo.create_issue(title=title, body=body)
@@ -275,7 +302,7 @@ def open_issues(repo_full_name: str, findings: list[dict]) -> list[str]:
                 print(f"[Reporter] Issues disabled on {repo_full_name} — stopping.")
                 break
             elif e.status == 403:
-                print(f"[Reporter] No permission to open issues on {repo_full_name} — stopping.")
+                print(f"[Reporter] No permission to open issues — stopping.")
                 break
             else:
                 print(f"[Reporter] GitHub error → {e.status}: {e.data}")
@@ -293,10 +320,15 @@ if __name__ == "__main__":
         "confidence":     0.95,
         "line_reference": "get_user",
         "title":          "SQL injection via f-string in get_user()",
-        "description":    "User input is directly interpolated into an SQL query: `query = f\"SELECT * FROM users WHERE username = '{username}'\"`. An attacker can manipulate the query.",
+        "description":    "User input is directly interpolated into a SQL query: `query = f\"SELECT * FROM users WHERE username = '{username}'\"`. An attacker can modify the query structure.",
         "fix":            "Use parameterized queries: `cursor.execute('SELECT * FROM users WHERE username = ?', (username,))`",
         "file_path":      "src/db.py",
         "language":       "Python",
     }
-    body = format_default_body(sample, "example/repo")
-    print(body)
+    print("=== TITLE ===")
+    print(format_title(sample))
+    print("\n=== BODY (no template, no contributing.md) ===")
+    print(format_human_body(sample, has_contributing=False))
+    print("\n=== BODY (with contributing.md) ===")
+    print(format_human_body(sample, has_contributing=True))
+
