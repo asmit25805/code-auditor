@@ -331,4 +331,3 @@ if __name__ == "__main__":
     print(format_human_body(sample, has_contributing=False))
     print("\n=== BODY (with contributing.md) ===")
     print(format_human_body(sample, has_contributing=True))
-
